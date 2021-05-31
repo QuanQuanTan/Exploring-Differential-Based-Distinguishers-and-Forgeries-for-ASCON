@@ -1,0 +1,10 @@
+#!/bin/bash
+
+sbox=2
+minizinc --solver "chuffed" -a -D "sbox = ${sbox};" --time-limit 10800000 --output-time --statistics ./ASCON_P.mzn >> ASCON_P_${sbox}.txt &
+sbox=3
+minizinc --solver "chuffed" -a -D "sbox = ${sbox};" --time-limit 10800000 --output-time --statistics ./ASCON_P.mzn >> ASCON_P_${sbox}.txt &
+sbox=4
+minizinc --solver "chuffed" -a -D "sbox = ${sbox};" --time-limit 10800000 --output-time --statistics ./ASCON_P.mzn >> ASCON_P_${sbox}.txt &
+sbox=5
+minizinc --solver "chuffed" -a -D "sbox = ${sbox};" --time-limit 10800000 --output-time --statistics ./ASCON_P.mzn >> ASCON_P_${sbox}.txt &
