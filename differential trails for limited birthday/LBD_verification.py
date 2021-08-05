@@ -4,6 +4,10 @@ import random
 import numpy as np
 import copy
 import math
+import itertools
+from pprint import pprint
+import time
+import re
 
 class ASCON():
 	# linear layer forward
@@ -22,10 +26,10 @@ class ASCON():
 	S_BOX = [0x4,0xb,0x1f,0x14,0x1a,0x15,0x9,0x2,0x1b,0x5,0x8,0x12,0x1d,0x3,0x6,0x1c,0x1e,0x13,0x7,0xe,0x0,0xd,0x11,0x18,0x10,0xc,0x1,0x19,0x16,0xa,0xf,0x17]
 	INV_S_BOX = [20,26,7,13,0,9,14,18,10,6,29,1,25,21,19,30,24,22,11,17,3,5,28,31,23,27,4,8,15,12,16,2]
 	# CONSTANT = [0xf0,0xe1,0xd2,0xc3,0xb4,0xa5,0x96,0x87,0x78,0x69,0x5a,0x4b]
-	CONSTANT = [0x96,0x87,0x78,0x69,0x5a,0x4b]
+	CONSTANT = [0xf0,0xe1,0xd2,0xc3,0xb4,0xa5,0x96,0x87,0x78,0x69,0x5a,0x4b]
 
 	def add_constants(self,state,nr):
-		return state
+		# return state
 		for i in range(8):
 			state[2][-8+i] = state[2][-8+i] ^ ((self.CONSTANT[nr] >> (7-i)) & 0b1)
 		return state
@@ -122,14 +126,22 @@ class ASCON():
 		for i in range(64):
 			S_out = (state[0][i] << 4) + (state[1][i] << 3) + (state[2][i] << 2) + (state[3][i] << 1) + (state[4][i] << 0) 	
 			A += np.log2(np.sum(invDDT[S_out] > 0))
+		# print('A:',A, 'B:',B)
 		return A, B
 
 	def generic_prob(self,difference):
 		Din,Dout = self.computeSets(difference)
 		cost = np.log2(max(min(np.sqrt(2**320/2**Din),np.sqrt(2**320/2**Dout)),2**321/((2**Din)*(2**Dout))))
 		return cost
+	def generic_prob_blackbox(self,difference):
+		Din,Dout = self.computeSets(difference)
+		front = np.log2(np.sqrt(2**320/2**Din))
+		back = np.log2(np.sqrt(2**320/2**Dout))
+		# print('cost:',np.log2(np.sqrt(2**320/2**Din)))
+		return front,back
 
-class ASCON_equation_computation():
+
+class ASCON_equation_computation(ASCON):
 	# this records what inputs are to the AND0, AND1,..., AND4
 	# by default, input1 has an NOT gate attached to it
 	AND_GATE_IN = [[[0,4],[1]], 
@@ -314,6 +326,20 @@ class ASCON_equation_computation():
 				f.write('\n')
 		f.close()
 
+	def sort_constants(self,LHS,RHS):
+		# this function helps to change the equations to satisfy the constants
+		for i in range(len(LHS)):
+			if 56 <= LHS[i][0][2] <= 63: # check column
+				flag = False # check row
+				if LHS[i][0][1] == 2: flag = True
+				for j in range(len(RHS[i])): 
+					if type(RHS[i][j]) == tuple and RHS[i][j][1] == 2: flag = True
+				if flag == False: continue
+				if (self.CONSTANT[LHS[i][0][0]+1] >> (63-LHS[i][0][2])) % 2 == 1: # add one to the constant for the additional round we add for backward
+					if type(RHS[i][-1]) == tuple: RHS[i].append(1) # x1 = x2 + x3 --> append 1
+					elif len(RHS[i]) == 1: RHS[i][0] ^= 1 # x1 = 1 --> x1 = 0 or the other way round
+					else: del RHS[i][-1] # x1 = x2 + 1 --> x1 = x2
+		return LHS,RHS
 
 
 class ASCON_dependency_computation(ASCON):
@@ -514,22 +540,22 @@ class ASCON_dependency_computation(ASCON):
 							y[j,k,new_LHS[i][0][1]] = 0
 							y[j,new_LHS[i][0][1],k] = 0
 
-			# for i in range(len(new_RHS)):
-			# 	print(new_LHS[i],new_RHS[i])
-			# for i in range(5):
-			# 	print('y'+str(i),end=' ')
-			# 	for j in range(5):
-			# 		for k in range(j,5):
-			# 			if j == k:
-			# 				if y[i,j,j] == 1:
-			# 					print('x'+str(j),end=' ')
-			# 			else:
-			# 				if y[i,j,k] == 1:
-			# 					print('x'+str(j)+'x'+str(k),end=' ')
-			# 	print(y_c[i])
-			# print()
-			# print()
-
+		# 	for i in range(len(new_RHS)):
+		# 		print(new_LHS[i],new_RHS[i])
+		# 	for i in range(5):
+		# 		print('y'+str(i),end=' ')
+		# 		for j in range(5):
+		# 			for k in range(j,5):
+		# 				if j == k:
+		# 					if y[i,j,j] == 1:
+		# 						print('x'+str(j),end=' ')
+		# 				else:
+		# 					if y[i,j,k] == 1:
+		# 						print('x'+str(j)+'x'+str(k),end=' ')
+		# 		print(y_c[i])
+		# 	print()
+		# 	print()
+		# assert False
 		# convert to cartesian equation
 		# how?		
 
@@ -538,28 +564,38 @@ class ASCON_dependency_computation(ASCON):
 		return y,y_c
 
 	def get_linear(self,y,y_c,round_num,col_num):
-		# simplified case: we only consider those that are constants
+		y = np.array(y)
 		lhs = []
 		rhs = []
-		for i in range(5):
+		for num in range(1,32):
+			tmp = np.zeros((5,5),dtype=int)
+			tmp_c = 0
+			if (num >> 4) % 2 == 1: 
+				tmp ^= y[0]; tmp_c ^= y_c[0]
+			if (num >> 3) % 2 == 1: 
+				tmp ^= y[1]; tmp_c ^= y_c[1]
+			if (num >> 2) % 2 == 1: 
+				tmp ^= y[2]; tmp_c ^= y_c[2]
+			if (num >> 1) % 2 == 1: 
+				tmp ^= y[3]; tmp_c ^= y_c[3]
+			if (num >> 0) % 2 == 1: 
+				tmp ^= y[4]; tmp_c ^= y_c[4]
 			linear = True
-			for j in range(5):
-				for k in range(5):
-					if y[i,j,k] == 1:
-						linear = False
+			for i in range(5):
+				for j in range(i,5):
+					if tmp[i,j] == 1: linear = False
 			if linear == True:
-				lhs.append([(round_num,i,col_num)])
-				rhs.append([])
-				for j in range(5):
-					pass
-					# if y[i,j,j] == 1:
-					# 	rhs[-1].append((round_num,j,col_num))
-				if y_c[i] == 1: rhs[-1].append(1)
-				elif y_c[i] == 0 and rhs[-1] == []:
-					rhs[-1].append(0)
-		# for i in range(len(lhs)):
-		# 	print(lhs[i],rhs[i])
+				lhs.append([]); rhs.append([])
+				indices = [(num >> (4-i))%2 for i in range(5)]
+				indices = [idx for idx, v in enumerate(indices) if v]
+				lhs[-1].append((round_num,indices[0],col_num))
+				for i in range(1,len(indices)):
+					rhs[-1].append((round_num,indices[i],col_num))
+				if len(rhs[-1]) == 0 or tmp_c == 1:
+					rhs[-1].append(int(tmp_c))
 		return lhs,rhs
+
+
 
 
 	def update_free_bits(self,constraint_free_bits,bits_used):
@@ -572,6 +608,54 @@ class ASCON_dependency_computation(ASCON):
 			temp_constraint_free_bits.append(temp)
 		return temp_constraint_free_bits
 
+	def find_max_independent_constraint_blackbox(self,LHS,RHS):
+		Sboxes_activeness = [0 for _ in range(64)]
+		# we can just count Sboxes
+		for i in range(len(LHS)):
+			if LHS[i][0][0] == 0:
+				Sboxes_activeness[LHS[i][0][2]] = 1
+		LHS_1 = [LHS[i] for i in range(len(LHS)) if LHS[i][0][0] == 1]
+		RHS_1 = [RHS[i] for i in range(len(RHS)) if LHS[i][0][0] == 1]
+		Sbox_inactive = [i for i in range(64) if Sboxes_activeness[i] == 0]
+
+		indices = []
+		for i in range(len(LHS_1)):
+			temp = []
+			exec('temp += [(('+str(LHS_1[i][0][2])+'-term) % 64) for term in self.Z' + str(LHS_1[i][0][1])+']')
+			for j in range(len(RHS_1[i])):
+				if type(RHS_1[i][j]) == int: break
+				exec('temp += [(('+str(RHS_1[i][0][2])+'-term) % 64) for term in self.Z' + str(RHS_1[i][0][1])+']')
+			indices.append(list(set(temp)))
+		for i in range(len(indices)):
+			index = []
+			for j in range(len(indices[i])):
+				if indices[i][j] in Sbox_inactive:
+					index.append(indices[i][j])
+			indices[i] = index
+		min_index = -1
+		LHS_fix = [LHS[i] for i in range(len(LHS)) if LHS[i][0][0] == 0]
+		RHS_fix = [RHS[i] for i in range(len(RHS)) if LHS[i][0][0] == 0]
+		while True:
+			min_constraint = 10000
+			for i in range(len(indices)):
+				if len(indices[i]) > 0 and len(indices[i]) < min_constraint:
+					min_index = i
+					min_constraint = len(indices[i])
+			if min_constraint == 10000: break
+			else:
+				LHS_fix.append(LHS_1[min_index])
+				RHS_fix.append(RHS_1[min_index])
+				Sbox_inactive.remove(indices[min_index][0])
+				del LHS_1[min_index]
+				del RHS_1[min_index]
+				del indices[min_index]
+				for i in range(len(indices)):
+					index = []
+					for j in range(len(indices[i])):
+						if indices[i][j] in Sbox_inactive:
+							index.append(indices[i][j])
+					indices[i] = index
+		return LHS_fix,RHS_fix
 
 	def find_max_independent_constraints(self,LHS,RHS):
 		# first, from each equation, retrieve the tuples
@@ -610,45 +694,56 @@ class ASCON_dependency_computation(ASCON):
 			constraints_fixers.append(copy.deepcopy(constraint_dependency[int(self.state_num-0.5)][i]))
 		bits_used = list(set(bits_used))
 
-		# replace the constraints at further away by linear constraints
-		i = 0
-		temp_constraints = []
-		temp_constraint_dependency = []
-		temp_constraint_free_bits = []
-		while i < len(constraints[int(self.state_num-1.5)]):
-			# gathering all the constraints from the same Sbox
-			Sbox_num = constraints[int(self.state_num-1.5)][i][0][0][2] # [i][0][0][2] --> i^th constraint, LHS, first of LHS, column number
-			lhs = [constraints[int(self.state_num-1.5)][i][0]]
-			rhs = [constraints[int(self.state_num-1.5)][i][1]]
-			j = i+1
-			while j < len(constraints[int(self.state_num-1.5)]) and constraints[int(self.state_num-1.5)][j][0][0][2] == Sbox_num:
-				lhs.append(constraints[int(self.state_num-1.5)][j][0])
-				rhs.append(constraints[int(self.state_num-1.5)][j][1])
-				j += 1
-			i = j
-			output,output_constants = self.convert_after_sbox(lhs,rhs)
-			lhs,rhs = self.get_linear(output,output_constants,self.state_num-1,Sbox_num)
-			temp = []
-			for k in range(len(lhs)): temp += dependency_array[int(lhs[k][0][0]*2)][lhs[k][0][1]][lhs[k][0][2]]
-			for k in range(len(rhs)): 
-				for l in range(len(rhs[k])):
-					if type(rhs[k][l]) == int: continue
-					temp += dependency_array[int(rhs[k][l][0]*2)][rhs[k][l][1]][rhs[k][l][2]]
-			temp_constraints += [lhs,rhs]
-			temp_constraint_dependency += copy.deepcopy(temp)
-			temp_constraint_free_bits += copy.deepcopy(temp)
+		if self.state_num-1.5 > 0:
+			# replace the constraints at further away by linear constraints
+			i = 0
+			temp_constraints = []
+			temp_constraint_dependency = []
+			temp_constraint_free_bits = []
+			while i < len(constraints[int(self.state_num-1.5)]):
+				# gathering all the constraints from the same Sbox
+				Sbox_num = constraints[int(self.state_num-1.5)][i][0][0][2] # [i][0][0][2] --> i^th constraint, LHS, first of LHS, column number
+				lhs = [constraints[int(self.state_num-1.5)][i][0]]
+				rhs = [constraints[int(self.state_num-1.5)][i][1]]
+				j = i+1
+				while j < len(constraints[int(self.state_num-1.5)]) and constraints[int(self.state_num-1.5)][j][0][0][2] == Sbox_num:
+					lhs.append(constraints[int(self.state_num-1.5)][j][0])
+					rhs.append(constraints[int(self.state_num-1.5)][j][1])
+					j += 1
+				i = j
+				output,output_constants = self.convert_after_sbox(lhs,rhs)
+				lhs,rhs = self.get_linear(output,output_constants,self.state_num-1,Sbox_num)
+				temp = []
+				for k in range(len(lhs)): temp += dependency_array[int(lhs[k][0][0]*2)][lhs[k][0][1]][lhs[k][0][2]]
+				for k in range(len(rhs)): 
+					for l in range(len(rhs[k])):
+						if type(rhs[k][l]) == int: continue
+						temp += dependency_array[int(rhs[k][l][0]*2)][rhs[k][l][1]][rhs[k][l][2]]
+				temp_constraints += [lhs,rhs]
+				temp_constraint_dependency += copy.deepcopy(temp)
+				temp_constraint_free_bits += copy.deepcopy(temp)
+			# combine all the constraints together with the dependencies
+			constraint_free_bits = [constraint_free_bits[i][j] for i in range(1,len(constraint_free_bits)) for j in range(len(constraint_free_bits[i]))\
+			 if constraints[i][j][0][0][0] != self.state_num-0.5 and self.state_num-1.5<=constraints[i][j][0][0][0]<=self.state_num+0.5] + [temp_constraint_free_bits]
+			
+			constraint_dependency = [constraint_dependency[i][j] for i in range(1,len(constraint_dependency)) for j in range(len(constraint_dependency[i]))\
+			 if constraints[i][j][0][0][0] != self.state_num-0.5 and self.state_num-1.5<=constraints[i][j][0][0][0]<=self.state_num+0.5] + [temp_constraint_dependency]
+			constraints = [constraints[i][j] for i in range(1,len(constraints)) for j in range(len(constraints[i]))\
+			 if constraints[i][j][0][0][0] != self.state_num-0.5 and self.state_num-1.5<=constraints[i][j][0][0][0]<=self.state_num+0.5] + \
+			 [[temp_constraints[i][j] for i in range(len(temp_constraints)) for j in range(len(temp_constraints[i]))]]
+			constraint_free_bits = self.update_free_bits(constraint_free_bits,bits_used)
+		else:
+			# combine all the constraints together with the dependencies
+			constraint_free_bits = [constraint_free_bits[i][j] for i in range(1,len(constraint_free_bits)) for j in range(len(constraint_free_bits[i]))\
+			 if constraints[i][j][0][0][0] != self.state_num-0.5 and self.state_num-1.5<=constraints[i][j][0][0][0]<=self.state_num+0.5]
+			
+			constraint_dependency = [constraint_dependency[i][j] for i in range(1,len(constraint_dependency)) for j in range(len(constraint_dependency[i]))\
+			 if constraints[i][j][0][0][0] != self.state_num-0.5 and self.state_num-1.5<=constraints[i][j][0][0][0]<=self.state_num+0.5]
+			constraints = [constraints[i][j] for i in range(1,len(constraints)) for j in range(len(constraints[i]))\
+			 if constraints[i][j][0][0][0] != self.state_num-0.5 and self.state_num-1.5<=constraints[i][j][0][0][0]<=self.state_num+0.5]
+			constraint_free_bits = self.update_free_bits(constraint_free_bits,bits_used)
 
-		# combine all the constraints together with the dependencies
-		constraint_free_bits = [constraint_free_bits[i][j] for i in range(1,len(constraint_free_bits)) for j in range(len(constraint_free_bits[i]))\
-		 if constraints[i][j][0][0][0] != self.state_num-0.5 and self.state_num-1.5<=constraints[i][j][0][0][0]<=self.state_num+0.5] + [temp_constraint_free_bits]
-		constraint_dependency = [constraint_dependency[i][j] for i in range(1,len(constraint_dependency)) for j in range(len(constraint_dependency[i]))\
-		 if constraints[i][j][0][0][0] != self.state_num-0.5 and self.state_num-1.5<=constraints[i][j][0][0][0]<=self.state_num+0.5] + [temp_constraint_dependency]
-		constraints = [constraints[i][j] for i in range(1,len(constraints)) for j in range(len(constraints[i]))\
-		 if constraints[i][j][0][0][0] != self.state_num-0.5 and self.state_num-1.5<=constraints[i][j][0][0][0]<=self.state_num+0.5] + \
-		 [[temp_constraints[i][j] for i in range(len(temp_constraints)) for j in range(len(temp_constraints[i]))]]
-
-		constraint_free_bits = self.update_free_bits(constraint_free_bits,bits_used)
-		 # now, we settle based on the number of free Sboxes/bits
+		# now, we settle based on the number of free Sboxes/bits
 		available_constraints = True
 		while available_constraints:
 			available_constraints = False
@@ -667,7 +762,6 @@ class ASCON_dependency_computation(ASCON):
 						min_index2 = i
 						min_value2 = len(constraint_free_bits[i])
 			if min_index == -1: min_index = min_index2 # use min_index 2 when we exhaust all state_num+0.5
-
 			constraints_wanted.append(copy.deepcopy(constraints[min_index]))
 			constraints_bits.append(copy.deepcopy(constraint_dependency[min_index]))
 			constraints_fixers.append(copy.deepcopy(constraint_free_bits[min_index][0]))
@@ -698,6 +792,17 @@ class ASCON_dependency_computation(ASCON):
 			sbox_num = constraints[j][0][0][0]
 			if sbox_num == self.state_num+0.5:
 				# find out the parity of the bits
+				# check if lhs and rhs has states affected by constants
+				const_flag = False
+				if 56 <= constraints[j][0][0][2] <= 63:
+					if constraints[j][0][0][1] == 2: const_flag = True
+					for k in range(len(constraints[j][1])): 
+						if type(constraints[j][1][k]) == tuple and constraints[j][1][k][1] ==2: const_flag = True
+					if const_flag and ((ascon.CONSTANT[int(state_num+1.5)] >> (63-constraints[j][0][0][2])) % 2) == 1: 
+						if type(constraints[j][1][-1]) == tuple: constraints[j][1].append(1)
+						elif len(constraints[j][1]) == 1: constraints[j][1][0] ^= 1
+
+
 				if type(constraints[j][1][-1]) == tuple: parity = 0
 				else: parity = constraints[j][1][-1]
 				parity_tuple = 0
@@ -711,8 +816,12 @@ class ASCON_dependency_computation(ASCON):
 				else: parity = constraints[j][1][-1]
 				parity_sbox = 0
 				for sbox in constraints_bits[j]:
-					parity_sbox ^= ascon.INV_S_BOX[(state[sbox[0][0]][sbox[0][1]]<<4) ^ (state[sbox[1][0]][sbox[1][1]]<<3) ^ (state[sbox[2][0]][sbox[2][1]]<<2) 
-					^ (state[sbox[3][0]][sbox[3][1]]<<1) ^ (state[sbox[4][0]][sbox[4][1]]<<0)]
+					if 56 <= sbox[0][1] <= 63: 
+						parity_sbox ^= ascon.INV_S_BOX[(state[sbox[0][0]][sbox[0][1]]<<4) ^ (state[sbox[1][0]][sbox[1][1]]<<3) ^ (state[sbox[2][0]][sbox[2][1]]<<2) 
+						^ (state[sbox[3][0]][sbox[3][1]]<<1) ^ (state[sbox[4][0]][sbox[4][1]]<<0) ^ ((ascon.CONSTANT[int(state_num+1.5)] >> (63-sbox[0][1])) % 2)]
+					else:
+						parity_sbox ^= ascon.INV_S_BOX[(state[sbox[0][0]][sbox[0][1]]<<4) ^ (state[sbox[1][0]][sbox[1][1]]<<3) ^ (state[sbox[2][0]][sbox[2][1]]<<2) 
+						^ (state[sbox[3][0]][sbox[3][1]]<<1) ^ (state[sbox[4][0]][sbox[4][1]]<<0)]
 				# if the parity is wrong,
 				# we inv the fixer Sbox, alter the bit we want, then Sbox back
 				if (parity_sbox >> (4-constraints[j][0][0][1])) % 2 != parity:
@@ -735,31 +844,37 @@ class ASCON_dependency_computation(ASCON):
 		expected_diff = difference 
 		if int(self.state_num) == self.state_num:
 			state0 = [XOR(state0[i],expected_diff[self.state_num][i]) for i in range(5)]
-			for i in range(self.state_num,self.nr):
+			for i in range(self.state_num+1,self.nr+1):
 				state0 = self.ascon_one_round(state0,i)
 				state1 = self.ascon_one_round(state1,i)
 				actual_diff = [XOR(state0[j],state1[j]) for j in range(5)]
-				if actual_diff != expected_diff[i+1]:
-					# print('forward: not the same at round',i)
+				if actual_diff != expected_diff[i]:
+					# for q in actual_diff:
+					# 	print(q)
+					# print()
+					# for q in expected_diff[i]:
+					# 	print(q)
+					# print()
+					# print('1forward: not the same at round',i)
 					return False
 		else:
 			state0 = [XOR(state0[i],self.linear_layer_inverse(expected_diff[int(self.state_num+0.5)])[i]) for i in range(5)]
 			state0 = self.linear_layer(state0)
 			state1 = self.linear_layer(state1)
-			for i in range(int(self.state_num+0.5),self.nr):
+			for i in range(int(self.state_num+1.5),self.nr+1):
 				state0 = self.ascon_one_round(state0,i)
 				state1 = self.ascon_one_round(state1,i)
 				actual_diff = [XOR(state0[j],state1[j]) for j in range(5)]
-				if actual_diff != expected_diff[i+1]:
+				if actual_diff != expected_diff[i]:
 					actual_diff = self.linear_layer_inverse(actual_diff)
-					expected_diff[i+1] = self.linear_layer_inverse(expected_diff[i+1])
+					expected_diff[i] = self.linear_layer_inverse(expected_diff[i])
 					# for q in actual_diff:
 					# 	print(q)
 					# print()
-					# for q in expected_diff[i+1]:
+					# for q in expected_diff[i]:
 					# 	print(q)
 					# print()
-					# print('forward: not the same at round',i)
+					# print('2forward: not the same at round',i)
 					return False
 		return True
 
@@ -770,24 +885,37 @@ class ASCON_dependency_computation(ASCON):
 
 		if int(self.state_num) == self.state_num:
 			state0 = [XOR(state0[i],expected_diff[self.state_num][i]) for i in range(5)]
-			for i in range(self.state_num-1,-1,-1):
+			for i in range(self.state_num,0,-1):
 				state0 = self.inv_ascon_one_round(state0,i)
 				state1 = self.inv_ascon_one_round(state1,i)
 				actual_diff = [XOR(state0[j],state1[j]) for j in range(5)]
 				if actual_diff != expected_diff[i]:
-					# print('backward: not the same at round',i)
+					# for q in actual_diff:
+					# 	print(q)
+					# print()
+					# for q in expected_diff[i]:
+					# 	print(q)
+					# print()
+					# print('1backward: not the same at round',i)
 					return False
 		else:
 			state0 = self.linear_layer(state0);
 			state1 = copy.deepcopy(state0);
 			state0 = [XOR(state0[i],expected_diff[int(self.state_num+0.5)][i]) for i in range(5)]
-			for i in range(int(self.state_num-0.5),-1,-1):
+			for i in range(int(self.state_num+0.5),0,-1):
 				state0 = self.inv_ascon_one_round(state0,i)
 				state1 = self.inv_ascon_one_round(state1,i)
 				actual_diff = [XOR(state0[j],state1[j]) for j in range(5)]
-				if actual_diff != expected_diff[i]:
-					# print('backward: not the same at round',i)
+				if actual_diff != expected_diff[i-1]:
+					# for q in actual_diff:
+					# 	print(q)
+					# print()
+					# for q in expected_diff[i-1]:
+					# 	print(q)
+					# print()
+					# print('2backward: not the same at round',i)
 					return False
+
 		return True
 
 	def verification(self,state,difference):
@@ -795,17 +923,26 @@ class ASCON_dependency_computation(ASCON):
 			state = self.inv_ascon_round_function(state,self.state_num)
 		else:
 			state = self.linear_layer(state)
-			state = self.inv_ascon_round_function(state,int(self.state_num+0.5))
+			for i in range(int(self.state_num+0.5),0,-1):
+				state = self.inv_ascon_one_round(state,i)
 		state0 = copy.deepcopy(state)
 		state1 = copy.deepcopy(state)
 		state0 = [XOR(state0[i] , difference[0][i]) for i in range(5)]
+		temp_state0 = copy.deepcopy(state0)
+		temp_state1 = copy.deepcopy(state1)
+		temp_state0 = self.inv_ascon_one_round(temp_state0,0)
+		temp_state1 = self.inv_ascon_one_round(temp_state1,0)
+		print()
+		print('temp_state0',bitToString(temp_state0))
+		print('temp_state1',bitToString(temp_state1))
 		for i in range(len(difference)-1):
-			state0 = self.ascon_one_round(state0,i)
-			state1 = self.ascon_one_round(state1,i)
+			state0 = self.ascon_one_round(state0,i+1)
+			state1 = self.ascon_one_round(state1,i+1)
 			diff = [XOR(state0[i],state1[i]) for i in range(5)]
 			if diff != difference[i+1]:	
 				return False
 		return True
+
 
 def stringToBin(difference_hex_string):
 	difference = []
@@ -923,40 +1060,108 @@ def simplify_equations(LHS,RHS):
 				new_RHS[-1].append(0)
 	return new_LHS,new_RHS
 
+def Spread2Rounds(difference,blackbox=False):
+	def substitution_OR(s):
+		ascon = ASCON()
+		DDT = ascon.computeDDT().astype(int)
+		s_out = [[0 for _ in range(65)] for _ in range(5)]
+		# subsitution
+		for c in range(64):
+			s_in = (s[0][c] << 4) ^ (s[1][c] << 3) ^ (s[2][c] << 2) ^ (s[3][c] << 1) ^ (s[4][c] << 0)
+			for j in range(32):
+				if DDT[s_in,j] > 0:
+					s_out[0][c] = s_out[0][c] | ((j >> (4-0)) % 2)
+					s_out[1][c] = s_out[1][c] | ((j >> (4-1)) % 2)
+					s_out[2][c] = s_out[2][c] | ((j >> (4-2)) % 2)
+					s_out[3][c] = s_out[3][c] | ((j >> (4-3)) % 2)
+					s_out[4][c] = s_out[4][c] | ((j >> (4-4)) % 2)
+		return s_out
+	def linear_layer_OR(s):
+		ascon = ASCON()
+		s_out = [[0 for _ in range(65)] for _ in range(5)]
+		for i in range(64):
+			for term in ascon.Z0: s_out[0][i] = s_out[0][i] | s[0][(i-term)%64]
+			for term in ascon.Z1: s_out[1][i] = s_out[1][i] | s[1][(i-term)%64]
+			for term in ascon.Z2: s_out[2][i] = s_out[2][i] | s[2][(i-term)%64]
+			for term in ascon.Z3: s_out[3][i] = s_out[3][i] | s[3][(i-term)%64]
+			for term in ascon.Z4: s_out[4][i] = s_out[4][i] | s[4][(i-term)%64]
+		s = s_out.copy()
+		return s
+	def substitution_space(s):
+		count = 1
+		ascon = ASCON()
+		DDT = ascon.computeDDT().astype(int)
+		for c in range(64):
+			active_bits = (s[0][c] << 4) ^ (s[1][c] << 3) ^ (s[2][c] << 2) ^ (s[3][c] << 1) ^ (s[4][c] << 0)
+			tmp = np.zeros((32,),dtype=int)
+			for i in range(1,32):
+				for j in range(0,32):
+					if i&active_bits == 0: continue
+					tmp += DDT[i&active_bits,:]
+			# print(active_bits,tmp.tolist(),tmp.tolist().count(0))
+			count = count * tmp.tolist().count(0)
+		# print('count:',count, end=' ')
+		return math.log2(count)
+	ascon = ASCON()
+	Din,_ = ascon.computeSets(difference)
+	s = copy.deepcopy(difference[-1])
+	s = substitution_OR(s)
+	s = linear_layer_OR(s)
+	Dout_p = substitution_space(s)
+	# print(Din,320-Dout_p)
+	if blackbox == True:
+		# print(320-Dout_p)
+		cost = np.log2(np.sqrt(2**320/(2**(320-Dout_p))))
+	else:
+		cost = np.log2(max(min(np.sqrt(2**320/2**Din),np.sqrt(2**320/(2**(320-Dout_p)))),2**321/((2**Din)*(2**(320-Dout_p)))))
+	return cost
 
 
-def main(difference,state_num,filename=None):
+def bitToString(state):
+	state = bitToInt(state)
+	for i in range(len(state)):
+		state[i] = hex(state[i])[2:].zfill(16)
+	return state
+	
+
+
+def main_nonblackbox(difference,state_num,filename=None):
 	# initialization
 	ascon = ASCON()
+	print('probability of generic permutation',ascon.generic_prob(difference))
 	equation_computation = ASCON_equation_computation()
 	dependency_computation = ASCON_dependency_computation(len(difference)-1,state_num)
 
 	LHS,RHS = equation_computation.find_equations(difference.copy())
 	LHS,RHS = simplify_equations(LHS,RHS)
-
 	# for printing of equations
 	equations = equation_computation.make_string_equations(LHS,RHS)
 	# equation_computation.print_equations(equations) # this prints out all the possible equations
 	
 	# this computes independent equations 
 	constraints_wanted,constraints_bits,bits_used,constraints_fixers = dependency_computation.find_max_independent_constraints(LHS,RHS)
+	# for i in range(len(constraints_wanted)):
+	# 	print(constraints_wanted[i],constraints_bits[i],constraints_fixers[i])
 	print('total number of possible constraints',len(equations))
 	print('total number of independent constraints:',len(constraints_wanted))
 	print('probability of limited birthday distinguisher:',len(equations)-len(constraints_wanted))
-	print('probability of generic permutation',ascon.generic_prob(difference))
-	max_tries = 100
+	print('probability of generic permutation (1,1)',ascon.generic_prob(difference))
+	print('probability of generic permutation (1,2)',Spread2Rounds(difference))
+	# print('probability of generic permutation (2,1)',Spread2RoundsBackwards(difference))
+	max_tries = 1
 	counter = 0
 	tries = 0
 	while tries < max_tries:
 		diff_satisfiability = inverse_diff_satisfiability = False
 		while diff_satisfiability == False or inverse_diff_satisfiability == False:
 			counter += 1 
+			print('\rNumber of tries so far:',math.log2(counter),end='',flush=True)
 			state = dependency_computation.fix_constraints(constraints_wanted,constraints_bits,constraints_fixers)
 			diff_satisfiability = dependency_computation.check_satisfiability_forward(state,difference.copy())
 			if not diff_satisfiability: continue
 			inverse_diff_satisfiability = dependency_computation.check_satisfiability_backward(state,difference.copy())
-			print('\rNumber of tries so far:',math.log2(counter),end='',flush=True)
 		if dependency_computation.verification(state,difference):
+			# print(bitToString(state))
 			pass
 		else:	
 			print('verification failed!')
@@ -965,18 +1170,32 @@ def main(difference,state_num,filename=None):
 	print()
 	print('average number of tries:',math.log2(counter/max_tries))
 
-	
+
+def main_blackbox(difference,state_num):
+	if state_num != 0:
+		print('state_num must be 0!')
+		return
+	ascon = ASCON()
+	equation_computation = ASCON_equation_computation()
+	dependency_computation = ASCON_dependency_computation(len(difference)-1,state_num)
+	LHS,RHS = equation_computation.find_equations(difference.copy())
+	LHS,RHS = simplify_equations(LHS,RHS)
+	print('probability of blackbox limited birthday distinguisher:',len(LHS))
+	front_cost, back_cost = ascon.generic_prob_blackbox(difference) # front_cost: adding a free round in the front
+	print('probability of generic permutation start from the front:',back_cost)
+	print('probability of generic permutation start from the back:',front_cost)
+	print('probability of generic permutation (1,2)',Spread2Rounds(difference,blackbox=True))
 		
 
 if __name__ == '__main__':
-	# 2 round trail
+	# LB2
 	# difference_hex_string = \
 	# [['0000000000000000','0000000000000001','0000000000000001','0000000000000000','0000000000000000'],
 	#  ['0000201000000001','0000000000000000','0000000000000000','0000000000000000','0000000000000000'],
 	#  ['0000000004000101','2001209002000049','0000000000000000','0000000000000000','0000000000000000']
 	# ]
 	# state_num = 0.5
-	# 3 round trail
+	# LB3
 	# difference_hex_string = \
 	# [['0000000000000000','0000000000000001','0000000000000001','0000000000000000','0000000000000000'],
 	#  ['0000201000000001','0000000000000000','0000000000000000','0000000000000000','0000000000000000'],
@@ -984,7 +1203,7 @@ if __name__ == '__main__':
 	#  ['4020100004000180','0008000224000900','9481b45a4308006c','322d30d8b6488148','0000000000000000']
 	# ]
 	# state_num = 1.5
-	# 4 round trail
+	# LB4
 	# difference_hex_string = \
 	# [['0000000000000000','0000000000000001','0000000000000001','0000000000000000','0000000000000000'],
 	# ['0000201000000001','0000000000000000','0000000000000000','0000000000000000','0000000000000000'],
@@ -992,8 +1211,16 @@ if __name__ == '__main__':
 	# ['0020100000000100','2009241226000948','9481b45a4308006c','322d30d8b6488148','1002000000080008'],
 	# ['162e14c670b19a21','0012000210000d48','645f5698151c0c77','99b7ea6001186aa2','6648288901610300']]
 	# state_num = 2.5
+ 	# LB4.2
+	# difference_hex_string = \
+	# [['fb8e401124ca8085','04318d0c40007a10','04318d0c40007a10','fb8c400120408005','fb8c400120408005'],
+	#  ['4020001000000100','0020300000000181','0020300000000001','4000001004010000','0000000004010181'],
+	#  ['2000000000000001','0000000000000000','0000000000000000','0000000000000000','0000000000000000'],
+	#  ['2000241200000001','2000000002400008','0000000000000000','0000000000000000','0000000000000000'],
+	#  ['0000040204800121','2401048202000041','108000000369000c','0204000002409128','0000000000000000']]
+	# state_num = 0.5
 
-	# 5 round trail
+	# LB5
 	# difference_hex_string = \
 	# [['0000000000020081','0000000000000000','0000000000000000','0000000000020081','0000000000020081'],
 	# ['0000000000000000','0000000000000000','0000000000000000','2000800000020000','0000000000000000'],
@@ -1004,11 +1231,44 @@ if __name__ == '__main__':
 	# state_num = 3.5
 
 
-	difference = stringToBin(difference_hex_string)
+
+
+	# for black-box
+	# LB2
+	# difference_hex_string = \
+	# [['0000000000000000','0000000000000001','0000000000000001','0000000000000000','0000000000000000'],
+	#  ['0000201000000001','0000000000000000','0000000000000000','0000000000000000','0000000000000000'],
+	#  ['0000000004000101','2001209002000049','0000000000000000','0000000000000000','0000000000000000']
+	# ]
+	# state_num = 0
+	# LB3
+	# difference_hex_string = \
+	# [['0000000000000000','0000000000000001','0000000000000001','0000000000000000','0000000000000000'],
+	#  ['0000201000000001','0000000000000000','0000000000000000','0000000000000000','0000000000000000'],
+	#  ['0000000004000101','2001209002000049','0000000000000000','0000000000000000','0000000000000000'],
+	#  ['4020100004000180','0008000224000900','9481b45a4308006c','322d30d8b6488148','0000000000000000']
+	# ]
+	# state_num = 0
+	# LB3.1
+	# difference_hex_string = \
+	# [['32a11104c9b008db','0000000000000001','0000000000000001','32a11104c9b008da','32a11104c9b008da'],
+	#  ['0000201000000001','0000000000000000','0000000000000000','0000201000000001','0000000000000000'],
+	#  ['0000000004000101','0000000000000000','0000000000000000','0000000000000000','0000000000000000'],
+	#  ['4020301004000181','0008000226000909','0000000000000000','0000000000000000','0000000000000000']]
+	# state_num = 0
+	# LB4.1
+	# difference_hex_string = \
+	# [['0000000400000000','63b6c53b00766181','63b6c53b00766181','0000000400000000','0000000400000000'],
+	# ['0000000000000000','0000000401020000','0000000000000000','0000000401020000','0000000000000000'],
+	# ['0000000000000000','0000000000000000','0000000000000000','0000000400004001','0000000000000000'],
+	# ['080420140000c041','0000000000000000','0000000000000000','0000000000000000','0000002408804081'],
+	# ['98100d240cc44291','283420b1cc948e80','0000000000000000','0000000000000000','0000002408804081']]
+	# state_num = 0
 	
+	# difference = stringToBin(difference_hex_string)
 
-	main(difference,state_num)
-
+	main_blackbox(difference,state_num)
+	# main_nonblackbox(difference,state_num)
 
 
 

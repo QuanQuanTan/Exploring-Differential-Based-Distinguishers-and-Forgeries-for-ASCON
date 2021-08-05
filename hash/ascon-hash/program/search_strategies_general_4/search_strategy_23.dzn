@@ -1,0 +1,6 @@
+search_ann = seq_search([
+    int_search(row(sboxes,3), random_order, indomain_min, complete),
+    int_search(row(sboxes,2), random_order, indomain_min, complete),
+    int_search(row(sboxes,0), random_order, indomain_min, complete),
+    int_search(row(sboxes,1), random_order, indomain_min, complete),
+    int_search(array1d(prb), occurrence, indomain_min, complete)]);

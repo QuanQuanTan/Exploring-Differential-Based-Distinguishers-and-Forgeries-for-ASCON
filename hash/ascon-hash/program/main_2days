@@ -1,0 +1,19 @@
+#!/bin/bash
+
+function max2 {
+   while [ `jobs | wc -l` -ge 75 ]
+   do
+      sleep 1
+   done
+}
+
+rd=4
+results_dir=./results_2days_${rd}
+mkdir -p ${results_dir}
+
+source_minizinc=ASCON_ascon128.mzn
+for ss in {1..24}; do
+	echo doing 4:${ss}
+	max2; minizinc --solver "chuffed" -a --time-limit 172800000 --output-time --statistics ${source_minizinc} -D "nr=${rd}" ./search_strategies_general_${rd}/search_strategy_${ss}.dzn &> ${results_dir}/results_${rd}_${ss}.txt & # 2 days
+	# max2; minizinc --solver "chuffed" -a --time-limit 14400000 -n 1 ${source_minizinc} -D "nr=${nr}" ${search_folder}/search_strategy_${ss}.dzn &> ${results_dir}/results_${ss}.txt & # 4 hours
+done
