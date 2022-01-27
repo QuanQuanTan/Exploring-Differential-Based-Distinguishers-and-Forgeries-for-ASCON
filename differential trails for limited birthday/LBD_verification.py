@@ -129,17 +129,6 @@ class ASCON():
 		# print('A:',A, 'B:',B)
 		return A, B
 
-	def generic_prob(self,difference):
-		Din,Dout = self.computeSets(difference)
-		cost = np.log2(max(min(np.sqrt(2**320/2**Din),np.sqrt(2**320/2**Dout)),2**321/((2**Din)*(2**Dout))))
-		return cost
-	def generic_prob_blackbox(self,difference):
-		Din,Dout = self.computeSets(difference)
-		front = np.log2(np.sqrt(2**320/2**Din))
-		back = np.log2(np.sqrt(2**320/2**Dout))
-		# print('cost:',np.log2(np.sqrt(2**320/2**Din)))
-		return front,back
-
 
 class ASCON_equation_computation(ASCON):
 	# this records what inputs are to the AND0, AND1,..., AND4
@@ -694,7 +683,7 @@ class ASCON_dependency_computation(ASCON):
 			constraints_fixers.append(copy.deepcopy(constraint_dependency[int(self.state_num-0.5)][i]))
 		bits_used = list(set(bits_used))
 
-		if self.state_num-1.5 > 0:
+		if self.state_num-1.5 >= 0:
 			# replace the constraints at further away by linear constraints
 			i = 0
 			temp_constraints = []
@@ -1111,9 +1100,10 @@ def Spread2Rounds(difference,blackbox=False):
 	# print(Din,320-Dout_p)
 	if blackbox == True:
 		# print(320-Dout_p)
-		cost = np.log2(np.sqrt(2**320/(2**(320-Dout_p))))
+		# print(np.log2(np.sqrt(2**320/(2**(320-Dout_p)))),np.log2(2**321/(1*(2**(320-Dout_p)))))
+		cost = np.log2(max(np.sqrt(2**(1+Dout_p)),2**(1+Dout_p)))
 	else:
-		cost = np.log2(max(min(np.sqrt(2**320/2**Din),np.sqrt(2**320/(2**(320-Dout_p)))),2**321/((2**Din)*(2**(320-Dout_p)))))
+		cost = np.log2(max(min(np.sqrt(2**(321-Din)),np.sqrt(2**(1+Dout_p))),2**(1+Dout_p-Din)))
 	return cost
 
 
@@ -1125,10 +1115,9 @@ def bitToString(state):
 	
 
 
-def main_nonblackbox(difference,state_num,filename=None):
+def main_nonblackbox(difference,state_num,test=False):
 	# initialization
 	ascon = ASCON()
-	print('probability of generic permutation',ascon.generic_prob(difference))
 	equation_computation = ASCON_equation_computation()
 	dependency_computation = ASCON_dependency_computation(len(difference)-1,state_num)
 
@@ -1145,30 +1134,33 @@ def main_nonblackbox(difference,state_num,filename=None):
 	print('total number of possible constraints',len(equations))
 	print('total number of independent constraints:',len(constraints_wanted))
 	print('probability of limited birthday distinguisher:',len(equations)-len(constraints_wanted))
-	print('probability of generic permutation (1,1)',ascon.generic_prob(difference))
+	Din,Dout = ascon.computeSets(difference) # front_cost: adding a free round in the front
+	print('Din,Dout',Din,Dout)
+	print('probability of generic permutation (1,1)',np.log2(max(min(np.sqrt(2**(321-Dout)),np.sqrt(2**(321-Din))),2**(321-Dout-Din))))
 	print('probability of generic permutation (1,2)',Spread2Rounds(difference))
 	# print('probability of generic permutation (2,1)',Spread2RoundsBackwards(difference))
-	max_tries = 1
-	counter = 0
-	tries = 0
-	while tries < max_tries:
-		diff_satisfiability = inverse_diff_satisfiability = False
-		while diff_satisfiability == False or inverse_diff_satisfiability == False:
-			counter += 1 
-			print('\rNumber of tries so far:',math.log2(counter),end='',flush=True)
-			state = dependency_computation.fix_constraints(constraints_wanted,constraints_bits,constraints_fixers)
-			diff_satisfiability = dependency_computation.check_satisfiability_forward(state,difference.copy())
-			if not diff_satisfiability: continue
-			inverse_diff_satisfiability = dependency_computation.check_satisfiability_backward(state,difference.copy())
-		if dependency_computation.verification(state,difference):
-			# print(bitToString(state))
-			pass
-		else:	
-			print('verification failed!')
-			assert False
-		tries += 1
-	print()
-	print('average number of tries:',math.log2(counter/max_tries))
+	if test == True:
+		max_tries = 1
+		counter = 0
+		tries = 0
+		while tries < max_tries:
+			diff_satisfiability = inverse_diff_satisfiability = False
+			while diff_satisfiability == False or inverse_diff_satisfiability == False:
+				counter += 1 
+				print('\rNumber of tries so far:',math.log2(counter),end='',flush=True)
+				state = dependency_computation.fix_constraints(constraints_wanted,constraints_bits,constraints_fixers)
+				diff_satisfiability = dependency_computation.check_satisfiability_forward(state,difference.copy())
+				if not diff_satisfiability: continue
+				inverse_diff_satisfiability = dependency_computation.check_satisfiability_backward(state,difference.copy())
+			if dependency_computation.verification(state,difference):
+				# print(bitToString(state))
+				pass
+			else:	
+				print('verification failed!')
+				assert False
+			tries += 1
+		print()
+		print('average number of tries:',math.log2(counter/max_tries))
 
 
 def main_blackbox(difference,state_num):
@@ -1181,11 +1173,11 @@ def main_blackbox(difference,state_num):
 	LHS,RHS = equation_computation.find_equations(difference.copy())
 	LHS,RHS = simplify_equations(LHS,RHS)
 	print('probability of blackbox limited birthday distinguisher:',len(LHS))
-	front_cost, back_cost = ascon.generic_prob_blackbox(difference) # front_cost: adding a free round in the front
-	print('probability of generic permutation start from the front:',back_cost)
-	print('probability of generic permutation start from the back:',front_cost)
+	Din,Dout = ascon.computeSets(difference) # front_cost: adding a free round in the front
+	print('Din,Dout',Din,Dout)
+	print('probability of generic permutation start from the front:',np.log2(max(np.sqrt(2**(321-Dout)),2**(321-Dout))))
+	print('probability of generic permutation start from the back:',np.log2(max(np.sqrt(2**(321-Din)),2**(321-Din))))
 	print('probability of generic permutation (1,2)',Spread2Rounds(difference,blackbox=True))
-		
 
 if __name__ == '__main__':
 	# LB2
@@ -1195,6 +1187,7 @@ if __name__ == '__main__':
 	#  ['0000000004000101','2001209002000049','0000000000000000','0000000000000000','0000000000000000']
 	# ]
 	# state_num = 0.5
+
 	# LB3
 	# difference_hex_string = \
 	# [['0000000000000000','0000000000000001','0000000000000001','0000000000000000','0000000000000000'],
@@ -1203,15 +1196,17 @@ if __name__ == '__main__':
 	#  ['4020100004000180','0008000224000900','9481b45a4308006c','322d30d8b6488148','0000000000000000']
 	# ]
 	# state_num = 1.5
+
 	# LB4
-	# difference_hex_string = \
-	# [['0000000000000000','0000000000000001','0000000000000001','0000000000000000','0000000000000000'],
-	# ['0000201000000001','0000000000000000','0000000000000000','0000000000000000','0000000000000000'],
-	# ['0000000004000101','2001209002000049','0000000000000000','0000000000000000','0000000000000000'],
-	# ['0020100000000100','2009241226000948','9481b45a4308006c','322d30d8b6488148','1002000000080008'],
-	# ['162e14c670b19a21','0012000210000d48','645f5698151c0c77','99b7ea6001186aa2','6648288901610300']]
-	# state_num = 2.5
- 	# LB4.2
+	difference_hex_string = \
+	[['0000000000000000','0000000000000001','0000000000000001','0000000000000000','0000000000000000'],
+	['0000201000000001','0000000000000000','0000000000000000','0000000000000000','0000000000000000'],
+	['0000000004000101','2001209002000049','0000000000000000','0000000000000000','0000000000000000'],
+	['0020100000000100','2009241226000948','9481b45a4308006c','322d30d8b6488148','1002000000080008'],
+	['162e14c670b19a21','0012000210000d48','645f5698151c0c77','99b7ea6001186aa2','6648288901610300']]
+	state_num = 2.5
+
+	# LB4.2
 	# difference_hex_string = \
 	# [['fb8e401124ca8085','04318d0c40007a10','04318d0c40007a10','fb8c400120408005','fb8c400120408005'],
 	#  ['4020001000000100','0020300000000181','0020300000000001','4000001004010000','0000000004010181'],
@@ -1241,6 +1236,7 @@ if __name__ == '__main__':
 	#  ['0000000004000101','2001209002000049','0000000000000000','0000000000000000','0000000000000000']
 	# ]
 	# state_num = 0
+
 	# LB3
 	# difference_hex_string = \
 	# [['0000000000000000','0000000000000001','0000000000000001','0000000000000000','0000000000000000'],
@@ -1249,6 +1245,7 @@ if __name__ == '__main__':
 	#  ['4020100004000180','0008000224000900','9481b45a4308006c','322d30d8b6488148','0000000000000000']
 	# ]
 	# state_num = 0
+
 	# LB3.1
 	# difference_hex_string = \
 	# [['32a11104c9b008db','0000000000000001','0000000000000001','32a11104c9b008da','32a11104c9b008da'],
@@ -1256,6 +1253,7 @@ if __name__ == '__main__':
 	#  ['0000000004000101','0000000000000000','0000000000000000','0000000000000000','0000000000000000'],
 	#  ['4020301004000181','0008000226000909','0000000000000000','0000000000000000','0000000000000000']]
 	# state_num = 0
+
 	# LB4.1
 	# difference_hex_string = \
 	# [['0000000400000000','63b6c53b00766181','63b6c53b00766181','0000000400000000','0000000400000000'],
@@ -1264,11 +1262,12 @@ if __name__ == '__main__':
 	# ['080420140000c041','0000000000000000','0000000000000000','0000000000000000','0000002408804081'],
 	# ['98100d240cc44291','283420b1cc948e80','0000000000000000','0000000000000000','0000002408804081']]
 	# state_num = 0
-	
-	# difference = stringToBin(difference_hex_string)
 
-	main_blackbox(difference,state_num)
-	# main_nonblackbox(difference,state_num)
+
+
+	difference = stringToBin(difference_hex_string)
+	# main_blackbox(difference,state_num)
+	main_nonblackbox(difference,state_num)
 
 
 
